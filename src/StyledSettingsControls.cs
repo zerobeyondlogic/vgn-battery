@@ -135,7 +135,7 @@ internal sealed class SettingsCard : Panel
 {
     public SettingsCard()
     {
-        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = SettingsPalette.Card;
     }
 

@@ -165,6 +165,13 @@ internal static class Program
                         layoutChecks++;
                     });
                     File.WriteAllText(Path.Combine(qaDirectory,"layout-checks.txt"),$"Passed {layoutChecks} popup layout checks with a real window and message loop.");
+                    int paintChecks=0;
+                    await PaintChecks.RunAsync((success,label) =>
+                    {
+                        if (!success) throw new InvalidDataException(label);
+                        paintChecks++;
+                    });
+                    File.WriteAllText(Path.Combine(qaDirectory,"paint-checks.txt"),$"Passed {paintChecks} paint invalidation checks using real WM_PAINT clips.");
                     await context.RunQaSmokeAsync();
                 }
                 catch (Exception ex)

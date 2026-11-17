@@ -825,6 +825,8 @@ internal sealed class BatteryPopup : Form
         ForeColor = Color.FromArgb(239, 243, 250);
         Font = new Font("Microsoft YaHei UI", 9F);
         DoubleBuffered = true;
+        // Disclosure resizing must also erase the previous bottom border.
+        SetStyle(ControlStyles.ResizeRedraw, true);
         Padding = new Padding(PagePadding);
         Text = "鼠标电量";
 

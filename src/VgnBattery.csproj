@@ -8,6 +8,6 @@
     <Nullable>enable</Nullable>
     <AssemblyName>VgnBattery</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.1.3</Version>
+    <Version>1.1.4</Version>
   </PropertyGroup>
 </Project>
