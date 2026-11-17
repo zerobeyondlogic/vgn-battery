@@ -35,6 +35,8 @@ internal sealed class TrayApp : ApplicationContext
     private readonly ToolStripMenuItem modeItem;
     private readonly ToolStripMenuItem fixedTargetItem;
     private readonly ToolStripMenuItem rotationItem;
+    private readonly ToolStripMenuItem settingsItem;
+    private readonly ToolStripSeparator multiSettingsSeparator;
     private bool refreshing;
     private bool refreshQueued;
     private volatile bool exiting;
@@ -100,6 +102,9 @@ internal sealed class TrayApp : ApplicationContext
         refreshItem = new ToolStripMenuItem("立即刷新", null, (_, _) => RequestImmediateRefresh());
         menu.Items.Add(refreshItem);
         menu.Items.Add(new ToolStripSeparator());
+        settingsItem = new ToolStripMenuItem("设置");
+        ConfigureSubmenu(settingsItem);
+        menu.Items.Add(settingsItem);
         modeItem = new ToolStripMenuItem("显示方式");
         ConfigureSubmenu(modeItem);
         foreach (var mode in Enum.GetValues<MouseDisplayMode>())
@@ -108,24 +113,26 @@ internal sealed class TrayApp : ApplicationContext
             choice.Click += (_, _) => SetDisplayMode(mode);
             modeItem.DropDownItems.Add(choice);
         }
-        menu.Items.Add(modeItem);
         fixedTargetItem = new ToolStripMenuItem("固定目标");
         ConfigureSubmenu(fixedTargetItem);
-        menu.Items.Add(fixedTargetItem);
         rotationItem = MakeIntervalMenu("轮换间隔", RotateChoices, SetRotateSeconds);
-        menu.Items.Add(rotationItem);
         pollIntervalItem = MakeIntervalMenu("查询间隔", PollChoices, SetPollSeconds);
-        menu.Items.Add(pollIntervalItem);
-        menu.Items.Add(new ToolStripSeparator());
         percentageItem = new ToolStripMenuItem("显示电量数字") { CheckOnClick = true, Checked = showPercentage };
         percentageItem.CheckedChanged += (_, _) => SetShowPercentage(percentageItem.Checked);
-        menu.Items.Add(percentageItem);
         lowBatteryItem = new ToolStripMenuItem($"低电通知（低于 {lowBatteryThreshold}%）") { CheckOnClick = true, Checked = lowBatteryEnabled };
         lowBatteryItem.CheckedChanged += (_, _) => SetLowBatteryOptions(lowBatteryItem.Checked, lowBatteryThreshold);
-        menu.Items.Add(lowBatteryItem);
         startupItem = new ToolStripMenuItem("开机自动运行") { CheckOnClick = true };
         startupItem.Click += (_, _) => SetStartup(startupItem.Checked);
-        menu.Items.Add(startupItem);
+        settingsItem.DropDownItems.Add(startupItem);
+        settingsItem.DropDownItems.Add(percentageItem);
+        settingsItem.DropDownItems.Add(lowBatteryItem);
+        settingsItem.DropDownItems.Add(pollIntervalItem);
+        multiSettingsSeparator = new ToolStripSeparator();
+        settingsItem.DropDownItems.Add(multiSettingsSeparator);
+        settingsItem.DropDownItems.Add(modeItem);
+        settingsItem.DropDownItems.Add(fixedTargetItem);
+        settingsItem.DropDownItems.Add(rotationItem);
+        settingsItem.DropDown.Opening += (_, _) => SyncPopupSettings(forceMenu: true, readStartup: true);
         menu.Items.Add(new ToolStripSeparator());
         exportItem = new ToolStripMenuItem("导出设备信息…", null, async (_, _) => await ExportDeviceInformationAsync());
         menu.Items.Add(exportItem);
@@ -198,7 +205,7 @@ internal sealed class TrayApp : ApplicationContext
     {
         if (exiting) return;
         if (popup.InvokeRequired) { popup.BeginInvoke(() => ShowPopup(deviceId)); return; }
-        detailsDeviceId = deviceId ?? display.GetVisible()[0].DeviceId;
+        detailsDeviceId = deviceId ?? VisibleTrayDevices()[0].DeviceId;
         SyncPopupSettings(forcePopup: true, readStartup: true);
         popup.PositionNearTray();
         popup.TopMost = true;
@@ -241,7 +248,10 @@ internal sealed class TrayApp : ApplicationContext
 #if UI_QA
             await Task.Delay(10);
             IReadOnlyList<MouseBattery> snapshot =
+            Program.QaSingleDevice ?
             [
+                new("qa-a", new BatteryReading(80, false, "演示数据", DateTimeOffset.Now, "2.4G 接收器", "演示 · VGN F2"))
+            ] : [
                 new("qa-a", new BatteryReading(80, false, "演示数据", DateTimeOffset.Now, "2.4G 接收器", "演示 · VGN F2")),
                 new("qa-b", new BatteryReading(35, false, "演示数据", DateTimeOffset.Now, "2.4G 接收器", "演示 · Keychron M5"))
             ];
@@ -253,7 +263,7 @@ internal sealed class TrayApp : ApplicationContext
             display.ApplySnapshot(snapshot);
             if (oldFixedId != display.FixedDeviceId) SaveSettings();
             if (string.IsNullOrEmpty(detailsDeviceId))
-                detailsDeviceId = display.GetVisible().FirstOrDefault(d => !string.IsNullOrEmpty(d.DeviceId))?.DeviceId;
+                detailsDeviceId = VisibleTrayDevices().FirstOrDefault(d => !string.IsNullOrEmpty(d.DeviceId))?.DeviceId;
             var warnings = new List<MouseBattery>();
             foreach (var device in snapshot)
             {
@@ -286,7 +296,7 @@ internal sealed class TrayApp : ApplicationContext
     private void UpdateDisplay()
     {
         if (exiting) return;
-        var wanted = display.GetVisible();
+        var wanted = VisibleTrayDevices();
         // Fixed and rotating modes reuse the same shell icon when its device changes.
         if (display.Mode != MouseDisplayMode.Tiled && wanted.Count == 1 && icons.Count == 1)
         {
@@ -370,6 +380,29 @@ internal sealed class TrayApp : ApplicationContext
                 SetDisplayMode(MouseDisplayMode.Fixed);
             }
             Check(icons.Count == 1 && !menu.IsDisposed, "repeated mode changes preserve one icon and the menu");
+            Check(settingsItem.DropDownItems.Contains(modeItem) && !menu.Items.Contains(modeItem)
+                && settingsItem.DropDownItems.Contains(pollIntervalItem),"tray settings are grouped under one submenu");
+            SyncPopupSettings(forceMenu:true);
+            Check(multiSettingsSeparator.Available && modeItem.Available && fixedTargetItem.Available && !rotationItem.Available,
+                "multi-device fixed settings are prepared before the submenu opens");
+            display.ApplySnapshot([
+                new("qa-a",new(80,false,"",DateTimeOffset.Now,"USB 有线","Single usable mouse")),
+                new("qa-idle",new(null,false,"",DateTimeOffset.Now,"2.4G 接收器","Idle receiver"))
+            ]);
+            UpdateDisplay();
+            SyncPopupSettings(forceMenu:true);
+            Check(!modeItem.Available && !rotationItem.Available && fixedTargetItem.Available,
+                "single-device menus retain recovery for the unavailable fixed target");
+            SetFixedTarget("qa-a");
+            SyncPopupSettings(forceMenu:true);
+            Check(!modeItem.Available && !rotationItem.Available && !fixedTargetItem.Available
+                && pollIntervalItem.Available && startupItem.Available,
+                "single-device menus hide multi-device controls and retain common settings");
+            SetDisplayMode(MouseDisplayMode.Rotate);
+            display.RotateNext();
+            UpdateDisplay();
+            Check(!rotationTimer.Enabled && icons.Count==1 && icons.Keys.Single()=="qa-a",
+                "single usable mice pause rotation without cycling through an idle receiver");
             File.WriteAllText(resultPath, $"Passed {checks} simulated tray integration checks. No hardware was queried.");
         }
         catch (Exception ex)
@@ -390,16 +423,18 @@ internal sealed class TrayApp : ApplicationContext
             {
                 Mode = display.Mode.ToString(), FixedDeviceId = display.FixedDeviceId,
                 DetailsDeviceId = detailsDeviceId, PopupVisible = popup.Visible, VisibleHostCount = icons.Count,
-                HostIds = icons.Keys.ToArray(), VisibleDeviceIds = display.GetVisible().Select(d => d.DeviceId).ToArray()
+                HostIds = icons.Keys.ToArray(), VisibleDeviceIds = VisibleTrayDevices().Select(d => d.DeviceId).ToArray()
             }, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
     }
 #endif
 
+    private IReadOnlyList<MouseBattery> VisibleTrayDevices() => SettingsVisibility.ForTray(display.Mode, display.Devices, display.GetVisible());
+
     private void ConfigureRotation()
     {
-        bool run = display.Mode == MouseDisplayMode.Rotate && display.Devices.Count > 1;
+        bool run = display.Mode == MouseDisplayMode.Rotate && SettingsVisibility.ForDevices(display.Devices);
         rotationTimer.Interval = rotateSeconds * 1000;
         if (run && !rotationTimer.Enabled) rotationTimer.Start();
         else if (!run && rotationTimer.Enabled) rotationTimer.Stop();
@@ -537,7 +572,7 @@ internal sealed class TrayApp : ApplicationContext
     private void SyncPopupSettings(bool forcePopup = false, bool forceMenu = false, bool readStartup = false)
     {
         bool syncPopup = forcePopup || popup.Visible;
-        bool syncMenu = forceMenu || menu.Visible;
+        bool syncMenu = forceMenu || menu.Visible || settingsItem.DropDown.Visible;
         // Hidden controls are refreshed when opened; polling and rotation only
         // need to keep the shell icons and model up to date in the background.
         if (!syncPopup && !syncMenu) return;
@@ -554,8 +589,16 @@ internal sealed class TrayApp : ApplicationContext
             foreach (ToolStripMenuItem choice in pollIntervalItem.DropDownItems) choice.Checked = (int)choice.Tag! == pollSeconds;
             foreach (ToolStripMenuItem choice in rotationItem.DropDownItems) choice.Checked = (int)choice.Tag! == rotateSeconds;
             foreach (ToolStripMenuItem choice in modeItem.DropDownItems) choice.Checked = (MouseDisplayMode)choice.Tag! == display.Mode;
-            fixedTargetItem.Enabled = display.Mode == MouseDisplayMode.Fixed;
+            bool multipleDevices = SettingsVisibility.ForDevices(display.Devices);
+            bool recoverTarget = display.Mode == MouseDisplayMode.Fixed
+                && SettingsVisibility.NeedsTargetRecovery(display.Devices, display.FixedDeviceId);
+            modeItem.Visible = multipleDevices;
+            fixedTargetItem.Visible = display.Mode == MouseDisplayMode.Fixed && (multipleDevices || recoverTarget);
+            fixedTargetItem.Text = multipleDevices ? "固定目标" : "显示设备";
+            fixedTargetItem.Enabled = choices.Any(c => c.Enabled);
+            rotationItem.Visible = multipleDevices && display.Mode == MouseDisplayMode.Rotate;
             rotationItem.Enabled = display.Mode == MouseDisplayMode.Rotate;
+            multiSettingsSeparator.Visible = modeItem.Available || fixedTargetItem.Available || rotationItem.Available;
             string signature = string.Join("\n", choices.Select(c => c.Value + "|" + c.Text + "|" + c.Enabled));
             if (signature != targetsSignature)
             {
@@ -722,7 +765,27 @@ internal sealed class BatteryPopup : Form
     private readonly TableLayoutPanel contentLayout;
     private readonly OtherDevicesPanel otherDevices;
     private readonly Panel viewport;
+    private readonly SettingsDisclosureButton settingsDisclosure;
+    private readonly TableLayoutPanel settingsContainer;
+    private readonly TableLayoutPanel settingsContent;
+    private readonly Panel modeRow;
+    private readonly Panel fixedRow;
+    private readonly Panel rotationRow;
+    private readonly Label fixedRowLabel;
+    private bool settingsExpanded;
+    private bool hasMultipleDeviceSettings;
+    private bool hasTargetRecovery;
+    private int settingsBodyLogicalHeight = 184;
+    private (bool Expanded, bool Multiple, bool Recovery, MouseDisplayMode Mode, int Dpi)? settingsLayoutKey;
     private bool settingState;
+    private const int PagePadding = 20;
+    private const int SettingsHeaderHeight = 32;
+    private const int SettingsCardInset = 10;
+    private const int SettingsCardTopGap = 8;
+    private const int StaticRowsHeight = 32 + 26 + 86 + 36 + 22 + 18;
+    internal bool SettingsExpanded => settingsExpanded;
+    internal bool HasMultipleDeviceSettings => hasMultipleDeviceSettings;
+    internal bool HasTargetRecovery => hasTargetRecovery;
     public event EventHandler? StartupRequested;
     public event EventHandler? PercentageRequested;
     public event EventHandler? LowBatteryOptionsRequested;
@@ -750,7 +813,7 @@ internal sealed class BatteryPopup : Form
         // entire 96-DPI control tree intact until all bounds/fonts are established.
         SuspendLayout();
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(350, 574);
+        ClientSize = new Size(350, PagePadding * 2 + StaticRowsHeight + SettingsCardTopGap + SettingsCardInset * 2 + SettingsHeaderHeight);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
 #if UI_QA
@@ -762,18 +825,18 @@ internal sealed class BatteryPopup : Form
         ForeColor = Color.FromArgb(239, 243, 250);
         Font = new Font("Microsoft YaHei UI", 9F);
         DoubleBuffered = true;
-        Padding = new Padding(20);
+        Padding = new Padding(PagePadding);
         Text = "鼠标电量";
 
         contentLayout = new TableLayoutPanel
         {
-            Dock = DockStyle.Top, Height = 534, ColumnCount = 1, RowCount = 8,
+            Dock = DockStyle.Top, Height = StaticRowsHeight + SettingsCardTopGap + SettingsCardInset * 2 + SettingsHeaderHeight, ColumnCount = 1, RowCount = 8,
             Margin = Padding.Empty, Padding = Padding.Empty, BackColor = Background
         };
         var layout = contentLayout;
         layout.SuspendLayout();
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (int height in new[] { 32, 26, 86, 36, 22, 0, 314, 18 })
+        foreach (int height in new[] { 32, 26, 86, 36, 22, 0, SettingsCardTopGap + SettingsCardInset * 2 + SettingsHeaderHeight, 18 })
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
 
         var heading = new TableLayoutPanel
@@ -854,14 +917,29 @@ internal sealed class BatteryPopup : Form
         layout.Controls.Add(otherDevices, 0, 5);
         var settingsCard = new SettingsCard
         {
-            Dock = DockStyle.Fill, Padding = new Padding(10), Margin = new Padding(0, 8, 0, 0)
+            Dock = DockStyle.Fill, Padding = new Padding(SettingsCardInset), Margin = new Padding(0, SettingsCardTopGap, 0, 0)
         };
         settingsCard.SuspendLayout();
-        var settings = new TableLayoutPanel
+        settingsContainer = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 9,
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2,
             Margin = Padding.Empty, Padding = Padding.Empty, BackColor = SettingsPalette.Card
         };
+        settingsContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        settingsContainer.RowStyles.Add(new RowStyle(SizeType.Absolute, SettingsHeaderHeight));
+        settingsContainer.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+        settingsDisclosure = new SettingsDisclosureButton
+        {
+            Dock = DockStyle.Fill, Margin = Padding.Empty, Font = new Font("Microsoft YaHei UI", 9.5F)
+        };
+        settingsDisclosure.Click += (_, _) => SetSettingsExpanded(!settingsExpanded);
+        settingsContainer.Controls.Add(settingsDisclosure, 0, 0);
+        settingsContent = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 9,
+            Margin = Padding.Empty, Padding = Padding.Empty, BackColor = SettingsPalette.Card, Visible = false
+        };
+        var settings = settingsContent;
         settings.SuspendLayout();
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         foreach (int height in new[] { 34, 34, 34, 8, 40, 34, 34, 34, 34 })
@@ -916,17 +994,19 @@ internal sealed class BatteryPopup : Form
         settings.Controls.Add(lowBatteryRow, 0, 4);
         modeChoice = MakeChoice("托盘显示方式");
         modeChoice.SelectionChanged += (_, _) => { if (!settingState) ModeRequested?.Invoke(this, EventArgs.Empty); };
-        AddChoiceRow(settings, 5, "显示方式", modeChoice);
+        modeRow = AddChoiceRow(settings, 5, "显示方式", modeChoice);
         fixedChoice = MakeChoice("固定显示的鼠标");
         fixedChoice.SelectionChanged += (_, _) => { if (!settingState) FixedTargetRequested?.Invoke(this, EventArgs.Empty); };
-        AddChoiceRow(settings, 6, "固定目标", fixedChoice);
+        fixedRow = AddChoiceRow(settings, 6, "固定目标", fixedChoice);
+        fixedRowLabel = fixedRow.Controls.OfType<Label>().Single();
         pollChoice = MakeChoice("鼠标电量查询间隔");
         pollChoice.SelectionChanged += (_, _) => { if (!settingState) PollRequested?.Invoke(this, EventArgs.Empty); };
         AddChoiceRow(settings, 7, "查询间隔", pollChoice);
         rotationChoice = MakeChoice("托盘图标轮换间隔");
         rotationChoice.SelectionChanged += (_, _) => { if (!settingState) RotationRequested?.Invoke(this, EventArgs.Empty); };
-        AddChoiceRow(settings, 8, "轮换间隔", rotationChoice);
-        settingsCard.Controls.Add(settings);
+        rotationRow = AddChoiceRow(settings, 8, "轮换间隔", rotationChoice);
+        settingsContainer.Controls.Add(settings, 0, 1);
+        settingsCard.Controls.Add(settingsContainer);
         layout.Controls.Add(settingsCard, 0, 6);
         hint = MakeLabel("自动查询 · 每 30 秒", 8F);
         hint.ForeColor = Color.FromArgb(113, 125, 143);
@@ -941,7 +1021,7 @@ internal sealed class BatteryPopup : Form
         KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) Hide(); };
         FormClosing += (_, e) => { if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
         Shown += (_, _) => WriteLayoutDiagnostics();
-        DpiChanged += (_, _) => BeginInvoke(() => { UpdateOtherDevicesLayout(); WriteLayoutDiagnostics(); });
+        DpiChanged += (_, _) => BeginInvoke(() => { UpdateSettingsPresentation(); WriteLayoutDiagnostics(); });
 
         // Establish a single scaling baseline only after every child has been added.
         AutoScaleDimensions = new SizeF(96, 96);
@@ -954,23 +1034,77 @@ internal sealed class BatteryPopup : Form
         WriteLayoutDiagnostics();
     }
 
+    protected override void SetVisibleCore(bool value)
+    {
+        // Every newly opened panel starts with only its setting heading. Hiding
+        // also closes the disclosure so it does not keep a large hidden layout.
+        if (settingsDisclosure is not null && ((value && !Visible) || (!value && Visible)))
+            SetSettingsExpanded(false);
+        base.SetVisibleCore(value);
+    }
+
     public void SetOtherDevices(string currentDeviceId, IReadOnlyList<MouseBattery> devices)
     {
         if (IsDisposed) return;
         int previousCount = otherDevices.Rows.Count;
-        if (otherDevices.SetDevices(currentDeviceId, devices) && previousCount != otherDevices.Rows.Count)
-            UpdateOtherDevicesLayout();
+        bool listChanged = otherDevices.SetDevices(currentDeviceId, devices) && previousCount != otherDevices.Rows.Count;
+        hasMultipleDeviceSettings = SettingsVisibility.ForDevices(devices);
+        hasTargetRecovery = SelectedDisplayMode == MouseDisplayMode.Fixed
+            && SettingsVisibility.NeedsTargetRecovery(devices, fixedChoice.SelectedValue);
+        if (!UpdateSettingsPresentation() && listChanged) UpdatePopupLayout();
     }
 
-    private int DesiredPopupHeight => (int)Math.Round((574 + OtherDevicesPanel.LogicalHeightForRows(otherDevices.Rows.Count)) * DeviceDpi / 96F);
+    internal void SetSettingsExpanded(bool expanded)
+    {
+        if (IsDisposed || settingsDisclosure is null || settingsExpanded == expanded) return;
+        settingsExpanded = expanded;
+        UpdateSettingsPresentation();
+        if (!expanded) viewport.AutoScrollPosition = Point.Empty;
+    }
 
-    private void UpdateOtherDevicesLayout()
+    private int SettingsCardLogicalHeight => SettingsCardTopGap + SettingsCardInset * 2 + SettingsHeaderHeight
+        + (settingsExpanded ? settingsBodyLogicalHeight : 0);
+
+    private int DesiredPopupHeight => ScaleLogical(PagePadding * 2 + StaticRowsHeight + SettingsCardLogicalHeight
+        + OtherDevicesPanel.LogicalHeightForRows(otherDevices.Rows.Count));
+
+    private int ScaleLogical(int value) => (int)Math.Round(value * DeviceDpi / 96F);
+
+    private bool UpdateSettingsPresentation()
+    {
+        var mode = SelectedDisplayMode;
+        var key = (settingsExpanded, hasMultipleDeviceSettings, hasTargetRecovery, mode, DeviceDpi);
+        if (settingsLayoutKey == key) return false;
+        settingsLayoutKey = key;
+        bool showFixed = mode == MouseDisplayMode.Fixed && (hasMultipleDeviceSettings || hasTargetRecovery);
+        bool showRotation = hasMultipleDeviceSettings && mode == MouseDisplayMode.Rotate;
+        modeRow.Visible = hasMultipleDeviceSettings;
+        fixedRow.Visible = showFixed;
+        rotationRow.Visible = showRotation;
+        fixedRowLabel.Text = hasMultipleDeviceSettings ? "固定目标" : "显示设备";
+        settingsContent.SuspendLayout();
+        int[] heights = [34, 34, 34, 8, 40, hasMultipleDeviceSettings ? 34 : 0,
+            showFixed ? 34 : 0, 34, showRotation ? 34 : 0];
+        for (int i=0;i<heights.Length;i++) settingsContent.RowStyles[i].Height = ScaleLogical(heights[i]);
+        settingsBodyLogicalHeight = heights.Sum();
+        settingsContent.Visible = settingsExpanded;
+        settingsDisclosure.Expanded = settingsExpanded;
+        settingsContent.ResumeLayout(true);
+        UpdateHint();
+        UpdatePopupLayout();
+        return true;
+    }
+
+    private void UpdatePopupLayout()
     {
         if (IsDisposed) return;
-        int listHeight = (int)Math.Round(OtherDevicesPanel.LogicalHeightForRows(otherDevices.Rows.Count) * DeviceDpi / 96F);
+        int listHeight = ScaleLogical(OtherDevicesPanel.LogicalHeightForRows(otherDevices.Rows.Count));
         contentLayout.SuspendLayout();
+        settingsContainer.RowStyles[0].Height = ScaleLogical(SettingsHeaderHeight);
+        settingsContainer.RowStyles[1].Height = settingsExpanded ? ScaleLogical(settingsBodyLogicalHeight) : 0;
         contentLayout.RowStyles[5].Height = listHeight;
-        contentLayout.Height = (int)Math.Round(534 * DeviceDpi / 96F) + listHeight;
+        contentLayout.RowStyles[6].Height = ScaleLogical(SettingsCardLogicalHeight);
+        contentLayout.Height = ScaleLogical(StaticRowsHeight + SettingsCardLogicalHeight) + listHeight;
         otherDevices.Visible = listHeight > 0;
         contentLayout.ResumeLayout(true);
 
@@ -1004,6 +1138,7 @@ internal sealed class BatteryPopup : Form
             PollSeconds = pollSeconds;
         }
         finally { settingState = false; }
+        UpdateSettingsPresentation();
     }
 
     public void SetState(TrayApp.BatteryView view, bool refreshing, bool startupEnabled, bool showTrayPercentage, bool lowBatteryEnabled, int lowBatteryThreshold)
@@ -1033,7 +1168,7 @@ internal sealed class BatteryPopup : Form
             : view.Percent is int remaining && lowBatteryEnabled && remaining < lowBatteryThreshold && !view.Charging ? "电量较低，建议充电"
             : TrayApp.ChargeLabel(view);
         message.Text = disconnected ? view.Message : view.Stale ? "移动鼠标后会自动更新，当前显示最近一次读数。" : view.Message;
-        hint.Text = $"自动查询 · 每 {PollSeconds} 秒" + (SelectedDisplayMode == MouseDisplayMode.Rotate ? $" · 每 {SelectedRotateSeconds} 秒轮换" : "");
+        UpdateHint();
         updated.Text = view.Timestamp == DateTimeOffset.MinValue ? "尚无读数"
             : (view.Stale ? "上次读数 · " : view.Percent is null ? "最近尝试 · " : "已更新 · ") + view.Timestamp.LocalDateTime.ToString("HH:mm:ss");
         battery.Percent = view.Percent;
@@ -1042,6 +1177,9 @@ internal sealed class BatteryPopup : Form
         battery.Invalidate();
         AccessibleDescription = view.Percent is int value ? $"{title.Text} 剩余电量 {value}%，{connection.Text}，{chargeState.Text}" : view.Message;
     }
+
+    private void UpdateHint() => hint.Text = $"自动查询 · 每 {PollSeconds} 秒"
+        + (hasMultipleDeviceSettings && SelectedDisplayMode == MouseDisplayMode.Rotate ? $" · 每 {SelectedRotateSeconds} 秒轮换" : "");
 
     public void PositionNearTray()
     {
@@ -1140,7 +1278,7 @@ internal sealed class BatteryPopup : Form
         Font = new Font("Microsoft YaHei UI", 9F), AccessibleName = name
     };
 
-    private static void AddChoiceRow(TableLayoutPanel settings, int row, string text, StyledChoiceButton choice)
+    private static Panel AddChoiceRow(TableLayoutPanel settings, int row, string text, StyledChoiceButton choice)
     {
         var panel = new TableLayoutPanel
         {
@@ -1158,6 +1296,7 @@ internal sealed class BatteryPopup : Form
         panel.Controls.Add(label, 0, 0);
         panel.Controls.Add(choice, 1, 0);
         settings.Controls.Add(panel, 0, row);
+        return panel;
     }
 }
 internal sealed class BatteryCanvas : Control

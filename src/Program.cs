@@ -5,6 +5,9 @@ namespace VgnBattery;
 
 internal static class Program
 {
+#if UI_QA
+    internal static bool QaSingleDevice { get; private set; }
+#endif
     private static string diagnosticDirectory = AppContext.BaseDirectory;
 
     [STAThread]
@@ -105,6 +108,7 @@ internal static class Program
                 previewDevices.Add(new("demo-unknown",new(null,false,"",previewTime,"2.4 GHz USB 接收器","VGN Mouse 2.4G Receiver · 长名称示例"),true));
             }
             popup.SetOtherDevices("demo-vgn",previewDevices);
+            popup.SetSettingsExpanded(args.Contains("--preview-settings"));
             popup.PerformLayout();
             using var surface=new Panel { ClientSize=popup.ClientSize, BackColor=popup.BackColor, ForeColor=popup.ForeColor, Font=popup.Font, Padding=popup.Padding };
             surface.CreateControl();
@@ -132,6 +136,9 @@ internal static class Program
         using var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, showName);
         if (!first) { showEvent.Set(); return; }
         ApplicationConfiguration.Initialize();
+#if UI_QA
+        QaSingleDevice=args.Contains("--qa-single");
+#endif
         using var context = new TrayApp();
 #if UI_QA
         using var qaTimer = new System.Windows.Forms.Timer { Interval=100 };
@@ -310,6 +317,7 @@ internal static class Program
         Check(shareReport.Contains("391D",StringComparison.Ordinal) && shareReport.Contains("102D",StringComparison.Ordinal),"share report retains model identifiers");
         MultiDeviceChecks.Run(Check);
         OtherDeviceChecks.Run(Check);
+        SettingsVisibilityChecks.Run(Check);
         File.WriteAllText(DiagnosticPath("self-test.txt"), $"Passed {passedChecks} protocol, identity, icon, multi-device, settings, startup, diagnostics and low battery policy checks. These are offline checks, not hardware validation.");
     }
 
